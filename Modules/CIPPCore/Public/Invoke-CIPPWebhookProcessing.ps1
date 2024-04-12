@@ -222,7 +222,7 @@ function Invoke-CippWebhookProcessing {
 
                     }
                     'generatePSA' {
-                        $GenerateEmail = New-CIPPAlertTemplate -format 'html'-data $Data -LocationInfo $Location -ActionResults $ActionResults
+                        $GenerateEmail = New-CIPPAlertTemplate -format 'html' -data $Data -LocationInfo $Location -ActionResults $ActionResults
                         Send-CIPPAlert -Type 'psa' -Title $GenerateEmail.title -HTMLContent $GenerateEmail.htmlcontent -TenantFilter $TenantFilter
                     }
                     'generateWebhook' {
