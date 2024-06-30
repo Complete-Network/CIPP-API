@@ -1,6 +1,6 @@
 
 
-function New-ExoBulkRequest ($tenantid, $cmdletArray, $useSystemMailbox, $Anchor, $NoAuthCheck, $Select, $IgnoreResponse = $false) {
+function New-ExoBulkRequest ($tenantid, $cmdletArray, $useSystemMailbox, $Anchor, $NoAuthCheck, $Select) {
     <#
     .FUNCTIONALITY
     Internal
@@ -12,7 +12,7 @@ function New-ExoBulkRequest ($tenantid, $cmdletArray, $useSystemMailbox, $Anchor
             Authorization             = "Bearer $($token.access_token)"
             Prefer                    = 'odata.maxpagesize = 1000;odata.continue-on-error'
             'parameter-based-routing' = $true
-            'X-AnchorMailbox'         = $anchor
+            'X-AnchorMailbox'         = $Anchor
         }
         try {
             if ($Select) { $Select = "`$select=$Select" }
@@ -37,22 +37,23 @@ function New-ExoBulkRequest ($tenantid, $cmdletArray, $useSystemMailbox, $Anchor
                     if ($cmdparams.User) { $Anchor = $cmdparams.User }
                     if (!$Anchor -or $useSystemMailbox) {
                         $OnMicrosoft = $Tenant.initialDomainName
-                        $anchor = "UPN:SystemMailbox{8cc370d3-822a-4ab8-a926-bb94bd0641a9}@$($OnMicrosoft)"
+                        $Anchor = "UPN:SystemMailbox{8cc370d3-822a-4ab8-a926-bb94bd0641a9}@$($OnMicrosoft)"
                     }
                     $headers['X-AnchorMailbox'] = $Anchor
+                    $Headers['X-CmdletName'] = $cmd.CmdletInput.CmdletName
+                    $headers['Accept'] = 'application/json; odata.metadata=minimal'
+                    $headers['Accept-Encoding'] = 'gzip'
                     $BatchRequest = @{
                         url     = $URL
                         method  = 'POST'
                         body    = $cmd
-                        headers = $Headers
+                        headers = $Headers.Clone()
                         id      = "$(New-Guid)"
                     }
                     $null = $BatchBodyObj['requests'].add($BatchRequest)
                 }
                 $Results = Invoke-RestMethod $BatchURL -ResponseHeadersVariable responseHeaders -Method POST -Body (ConvertTo-Json -InputObject $BatchBodyObj -Depth 10) -Headers $Headers -ContentType 'application/json; charset=utf-8'
-                $boundary = "--$($responseHeaders.'Content-Type' -split 'boundary=' | Select-Object -Last 1)"
-                $parts = $Results -split $boundary | Where-Object { $_.Trim() -ne '' }
-                $parts 
+                $Results
                 Write-Host "Batch #$($batches.IndexOf($batch) + 1) of $($batches.Count) processed"
             }
         } catch {
@@ -65,32 +66,21 @@ function New-ExoBulkRequest ($tenantid, $cmdletArray, $useSystemMailbox, $Anchor
             if ($null -eq $Message) { $Message = $ErrorMess }
             throw $Message
         }
-
-        if ($IgnoreResponse -eq $true) {
-            return 'Task sent to exchange'
-        }
-        if ($ReturnedData.value) {
-            return $ReturnedData.value
-        } else {
-            $ReturnedDataSplit = foreach ($part in $ReturnedData) {
-                $jsonString = $part -split '\r?\n\r?\n' | Where-Object { $_ -like '*{*' } | Out-String
-                $jsonObject = $jsonString | ConvertFrom-Json
-                if ($jsonObject.'@adminapi.warnings') {
-                    $jsonObject.value = $jsonObject.'@adminapi.warnings'
-                }
-                if ($jsonObject.error) {
-                    if ($jsonObject.error.details.message) {
-                        $msg = $jsonObject.error.details.message
-                    } else {
-                        $msg = $jsonObject.error.message
-                    }
-                    $jsonObject | Add-Member -MemberType NoteProperty -Name 'value' -Value $msg -Force
-                }
-                
-                $jsonObject.value
+        $FinalData = foreach ($item in $ReturnedData.responses.body) {
+            if ($item.'@adminapi.warnings') {
+                Write-Warning $($item.'@adminapi.warnings' | Out-String)
             }
-            return $ReturnedDataSplit 
+            if ($item.error) {
+                if ($item.error.details.message) {
+                    $msg = [pscustomobject]@{error = $item.error.details.message; target = $item.error.details.target }
+                } else {
+                    $msg = [pscustomobject]@{error = $item.error.message; target = $item.error.details.target }
+                }
+                $item | Add-Member -MemberType NoteProperty -Name 'value' -Value $msg -Force
+            }
+            [pscustomobject]$item.value
         }
+        return $FinalData
     } else {
         Write-Error 'Not allowed. You cannot manage your own tenant or tenants not under your scope'
     }
